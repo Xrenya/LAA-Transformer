@@ -1,3 +1,7 @@
+import torch
+import torch.nn as nn
+
+
 class DWConv(nn.Module):
     def __init__(
         self,
@@ -10,19 +14,37 @@ class DWConv(nn.Module):
         super().__init__()
         self.deptwise_layer = nn.Conv2d(
             in_channels=in_channels,
-            out_channels=out_channels,
+            out_channels=in_channels,
             kernel_size=kernel_size,
             stride=stride,
             padding=padding,
-            groups=in_channels
+            groups=in_channels,
+            bias=False
         )
-        self.norm = nn.BatchNorm2d(in_channels)
-        self.act = nn.ReLU6(inplace=True)
+        self.norm_dw = nn.BatchNorm2d(in_channels)
+        self.act_dw = nn.ReLU6(inplace=True)
+
+        self.pointwise_layer = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            bias=False,
+        )
+        self.norm_pw = nn.BatchNorm2d(in_channels)
+        self.act_pw = nn.ReLU6(inplace=True)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Depthwise convolution
         x = self.deptwise_layer(x)
-        x = self.norm(x)
-        x = self.act(x)
+        x = self.norm_dw(x)
+        x = self.act_dw(x)
+
+        # Pointwise convolution
+        x = self.pointwise_layer(x)
+        x = self.norm_pw(x)
+        x = self.act_pw(x)
         return x
 
 
