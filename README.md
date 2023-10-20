@@ -1,7 +1,9 @@
 # LAA-Transformer
 Learning Attention from Attention: Efficient Self-Refinement Transformer for Face Super-Resolution, IJCAI 2023 (PyTorch Code)
 
-Unofficial model reproduction.
+**Unofficial model reproduction.**
+
+[<img src="https://github.com/Guanxin-Li/LAA-Transformer/blob/main/architecture.png">](arch)
 
 **TODO**:
 - [ ] Build the model
