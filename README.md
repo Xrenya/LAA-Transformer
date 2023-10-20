@@ -5,5 +5,6 @@ Unofficial model reproduction.
 
 **TODO**:
 - [ ] Build the model
+  - Test replacing `DWT` layer with `F.conv2d(in_channels=in_channels, groups=in_channels)`
 - [ ] Training Pipeline
 - [ ] Train & test model
