@@ -92,7 +92,7 @@ class DWTFunction(Function):
 
     @staticmethod
     def backward(ctx, grad_LL, grad_LH, grad_HL, grad_HH):
-        matrix_low_0, matrix_low_1, matrix_high_0, matrix_high_1 = ctx.save_variables
+        matrix_low_0, matrix_low_1, matrix_high_0, matrix_high_1 = ctx.saved_variables
         grad_L = torch.add(torch.matmul(grad_LL, matrix_low_1.T), torch.matmul(grad_LH, matrix_high_1.T))
         grad_H = torch.add(torch.matmul(grad_HL, matrix_low_1.T), torch.matmul(grad_HH, matrix_high_1.T))
         grad_input = torch.add(torch.matmul(matrix_low_0.T, grad_L), torch.matmul(matrix_high_0.T, grad_H))
