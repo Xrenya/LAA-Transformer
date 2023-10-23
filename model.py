@@ -144,7 +144,8 @@ class MHSA(nn.Module):
         output = torch.matmul(attn, v)
         return coarse_attn, output
 
-
+"""
+Test this upsample and downsample compared to papers' state: Conv2d and ConvTranspose2d
 class Downsample(nn.Module):
 
     def __init__(self, in_channels):
@@ -169,6 +170,35 @@ class Upsample(nn.Module):
         x = self.conv(x)
 
         return x
+"""
+
+class Upsample(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv = nn.ConvTranspose2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=4,
+            stride=2
+        )
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        x = self.conv(x)
+        return x
+
+
+class Downsample(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=4,
+            stride=2
+        )
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        x = self.conv(x)
+        return x
+
 
 
 class RegionSelfAttention(nn.Module):
