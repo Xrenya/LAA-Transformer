@@ -7,12 +7,11 @@ from torch.autograd import Function
 class DWT(nn.Module):
     def __init__(self):
         super().__init__()
-        wavelet = pywt.Wavelet("haar")
-        self.band_low = wavelet.rec_lo
-        self.band_high = wavelet.rec_hi
+        self.band_low = [1 / math.sqrt(2), 1 / math.sqrt(2)]
+        self.band_high = [-1 / math.sqrt(2), 1 / math.sqrt(2)]
         self.band_length = len(self.band_low)
 
-    def generate_mat(self, height: int, width: int):
+    def generate_mat(self, height: int, width: int, device: str):
         max_side = max(height, width)
         half_side = max_side // 2
         mat_height = np.zeros((half_side, max_side + self.band_length - 2))
@@ -43,20 +42,15 @@ class DWT(nn.Module):
         mat_width_1 = mat_width_1[:, self.band_length // 2 - 1:end]
         mat_width_1 = np.transpose(mat_width_1)
 
-        self.matrix_low_0 = torch.tensor(mat_height_0)
-        self.matrix_low_1 = torch.tensor(mat_height_1)
-        self.matrix_high_0 = torch.tensor(mat_width_0)
-        self.matrix_high_1 = torch.tensor(mat_width_1)
-
-        if torch.cuda.is_available() != "cpu":
-            self.matrix_low_0 = self.matrix_low_0.cuda()
-            self.matrix_low_1 = self.matrix_low_1.cuda()
-            self.matrix_high_0 = self.matrix_high_0.cuda()
-            self.matrix_high_1 = self.matrix_high_1.cuda()
+        self.matrix_low_0 = torch.tensor(mat_height_0, device=device)
+        self.matrix_low_1 = torch.tensor(mat_height_1, device=device)
+        self.matrix_high_0 = torch.tensor(mat_width_0, device=device)
+        self.matrix_high_1 = torch.tensor(mat_width_1, device=device)
 
     def forward(self, x: torch.tensor) -> torch.tensor:
+        device = x.device
         batch, channels, height, width = x.shape
-        self.generate_mat(height, width)
+        self.generate_mat(height, width, device)
         return DWTFunction.apply(x, self.matrix_low_0, self.matrix_low_1, self.matrix_high_0, self.matrix_high_1)
 
 
@@ -86,8 +80,8 @@ class DWTFunction(Function):
             HH (torch.tensor): high-high frequency-domain components
         """
         ctx.save_for_backward(matrix_low_0, matrix_low_1, matrix_high_0, matrix_high_1)
-        L = torch.matmul(matrix_low_0, input)
-        H = torch.matmul(matrix_high_0, input)
+        L = torch.matmul(matrix_low_0, x)
+        H = torch.matmul(matrix_high_0, x)
 
         LL = torch.matmul(L, matrix_low_1)
         LH = torch.matmul(L, matrix_high_1)
