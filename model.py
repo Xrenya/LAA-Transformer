@@ -223,17 +223,46 @@ class RegionSelfAttention(nn.Module):
 
 
 class CoarseSelfAttention(nn.Module):
-    def __init__(self):
+    def __init__(self, dim: int, head_dim: int = 4):
         super().__init__()
-        self.fim = FIM()
-        self.mhsa = MHSA()
-        self.upsample = Upsample()
+        self.dim = dim
+        self.head_dim = head_dim
+        
+        self.upsample = Upsample(dim, dim)
+        self.downsample = Downsample(dim, dim)
+        
+        self.to_qkv = nn.Linear(head_dim, head_dim * 3)
+        self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fim(x)
-        coarse_attn, output = self.mhsa(x)
+        # downsample without increasing number of channels
+        x = self.downsample(x)
+
+        batch, channels, h, w = x.shape
+        x = x.view(batch, channels // self.head_dim, self.head_dim, h * w).transpose(-2, -1)
+        
+        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
+        
+        # batch, num_heads, patch, head_embed
+        attn = torch.matmul(k, q.transpose(-2, -1))
+        # batch, num_heads, patch, patch
+        attn = self.softmax(attn)
+
+        # [batch, num_heads, patch, patch] -> [batch, num_heads, patch]
+        # patch score for batches for each head this propogate to the selection key regions by induces
+        # which would be already splitted into number of head and head dim for further MHSA layers
+        coarse_attn = torch.sum(attn, dim=-2)
+
+        # since the number of features is decreasing the number of selected
+        # topk should probably depend on the features size
+        # from paper image the divisible of 4 was selected
+        k_features = (h * w) // 4
+        top_k = torch.topk(coarse_attn, k=k_features, dim=-1).indices
+
+        output = torch.matmul(attn, v)
+        output = output.permute(0, 1, 3, 2).reshape(batch, channels, h, w)
         output = self.upsample(output)
-        return coarse_attn, output
+        return top_k, output
 
 
 
