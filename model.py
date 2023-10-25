@@ -264,3 +264,70 @@ class RSABlock(nn.Module):
         x = x + self.rsa(self.norm1(x))
         x = x + self.mlp(self.norm2(x))
         return x
+
+
+class TopkAttention(nn.Module):
+    def __init__(self, head_dim: int = 4):
+        super().__init__()
+        self.stride = 2
+        self.kernel_size = 2
+        self.head_dim = head_dim
+
+        self.to_qkv = nn.Linear(head_dim, head_dim * 3)
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x: torch.Tensor, top_k: torch.Tensor) -> torch.Tensor:
+        residual = x.clone()
+
+        # [batch, embeddings, height, width]
+        batch, embed, h, w = x.shape
+        # [batch, num_heads, embeddings, height, width]
+        residual = residual.view(batch, embed // self.head_dim, self.head_dim, h, w)
+        print(residual.shape)
+        x = x.view(batch, embed // self.head_dim, self.head_dim, h, w)
+        # [batch, num_heads, embeddings, height // 2, width // 2, 2, 2]
+        patches = x.unfold(3, self.kernel_size, self.stride).unfold(4, self.kernel_size, self.stride)
+        patches = patches.reshape(batch, embed // self.head_dim, self.head_dim, -1, 2, 2)
+
+        # TODO remove loop with vectorize slicing
+        batches = []
+        for bat in range(batch):
+            slices = []
+            for i, inds in enumerate(top_k):
+                patchify = []
+                for idx in inds:
+                    patchify.append(patches[bat, i, :, idx, :, :].unsqueeze(0).unsqueeze(1).unsqueeze(3))
+                patchify = torch.cat(patchify, dim=3)
+                slices.append(patchify)
+            batches.append(torch.cat(slices, dim=1))
+        # MHSA
+        # [batch, num_heads, embeddings, top_k, top_k, 2, 2]
+        # slices = torch.cat(slices, dim=1)
+        batches = torch.cat(batches, dim=0)
+        # batch, num_heads, embeddings, top_k, top_k, 2, 2
+        # return batches
+        batches = batches.flatten(3)
+        batches = batches.transpose(-2, -1)
+
+        q, k, v = self.to_qkv(batches).chunk(3, dim=-1)
+
+        attn = torch.matmul(k, q.transpose(-2, -1))
+        attn = self.softmax(attn)
+
+        output = torch.matmul(attn, v)
+
+        _, _, num_patches, _ = output.shape
+        output = output.transpose(-2, -1)
+
+        residual_patches = residual.unfold(3, self.kernel_size, self.stride).unfold(4, self.kernel_size, self.stride)
+        residual_patches = residual_patches.reshape(batch, embed // self.head_dim, self.head_dim, -1, 2, 2)
+
+        output = output.view(batch, embed // self.head_dim, self.head_dim, -1, 2, 2)
+
+        for bat in range(batch):
+            for i, inds in enumerate(top_k):
+                for j, idx in enumerate(inds):
+                    residual_patches[bat, i, :, idx, :, :] += output[bat, i, :, j, :, :]
+
+        return residual_patches
+    
