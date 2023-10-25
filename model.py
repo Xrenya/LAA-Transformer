@@ -267,15 +267,15 @@ class CoarseSelfAttention(nn.Module):
 
 
 
-class RegionSearchAttention(nn.Module):
+class RegionSelectionAttention(nn.Module):
     def __init__(self):
-        self.csa = CoarseSelfAttention()
-        self.rsa = RegionSelfAttention()
-        self.dwconv = DWConv(in_channels, in_channels, kernel_size, stride, padding)
+        self.course_attn = CoarseSelfAttention()
+        self.topk_attn = TopkSelfAttention()
+        self.dwconv = DWConv()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        coarse_attn, coarse_output = self.csa(x)
-        region_output = self.rsa(x, coarse_attn)
+        top_k, coarse_output = self.course_attn(x)
+        region_output = self.rsa(coarse_output, top_k)
         x = coarse_output + region_output
         x = self.dwconv(x)
         return x
@@ -285,7 +285,7 @@ class RSABlock(nn.Module):
     def __init__(self, in_channels):
         super().__init__()
         self.norm1 = nn.LayerNorm()
-        self.rsa = RegionSearchAttention()
+        self.rsa = RegionSelectionAttention()
         self.norm2 = nn.LayerNorm()
         self.mlp = nn.MLP()
 
@@ -295,7 +295,7 @@ class RSABlock(nn.Module):
         return x
 
 
-class TopkAttention(nn.Module):
+class TopkSelfAttention(nn.Module):
     def __init__(self, head_dim: int = 4):
         super().__init__()
         self.stride = 2
