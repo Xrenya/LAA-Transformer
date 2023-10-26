@@ -172,31 +172,38 @@ class Upsample(nn.Module):
         return x
 """
 
-class Upsample(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+class Downsample(nn.Module):
+
+    def __init__(self, in_channels):
         super().__init__()
-        self.conv = nn.ConvTranspose2d(
+        self.conv = nn.Conv2d(
             in_channels=in_channels,
-            out_channels=out_channels,
+            out_channels=in_channels * 2,
             kernel_size=4,
-            stride=2
+            stride=2,
+            padding=0
         )
-    def forward(self, x: torch.tensor) -> torch.tensor:
+
+    def forward(self, x):
         x = self.conv(x)
         return x
 
 
-class Downsample(nn.Module):
-    def __init__(self, in_channels: int, out_channels: int):
+class Upsample(nn.Module):
+
+    def __init__(self, in_channels: int):
         super().__init__()
-        self.conv = nn.Conv2d(
+        self.conv = nn.ConvTranspose2d(
             in_channels=in_channels,
-            out_channels=out_channels,
+            out_channels=in_channels // 2,
             kernel_size=4,
-            stride=2
+            stride=2,
+            padding=1
         )
-    def forward(self, x: torch.tensor) -> torch.tensor:
+
+    def forward(self, x):
         x = self.conv(x)
+
         return x
 
 
@@ -359,4 +366,51 @@ class TopkSelfAttention(nn.Module):
                     residual_patches[bat, i, :, idx, :, :] += output[bat, i, :, j, :, :]
 
         return residual_patches
+    
+class DWTResidual(nn.Module):
+    def __init__(self, in_channels: int, out_channels):
+        super().__init__()
+        self.dwt = DWT()
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1
+        )
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        LL, LH, HL, HH = self.dwt(x)
+        LL = self.conv(LL)
+        LH = self.conv(LH)
+        HL = self.conv(HL)
+        return LL, LH, HL
+
+
+class WFM(nn.Module):
+    def __init__(self, in_channels: int):
+        super().__init__()
+        self.idwt = IDWT()
+        self.upsample = Upsample(in_channels)
+        self.conv = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=in_channels // 2,
+            kernel_size=1,
+            stride=1,
+            padding=0
+        )
+
+    def forward(
+        self,
+        ll: torch.tensor,
+        lh: torch.tensor,
+        hl: torch.tensor,
+        x: torch.tensor
+    ):
+        inverse_feature, upsample_feature = x.chunk(2, dim=-1)
+        inverse = self.idwt(ll, lh, hl, inverse_feature)
+        x = self.upsample(upsample_feature)
+        x = torch.cat([inverse, x])
+        x = self.conv(x)
+        return x
     
