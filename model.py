@@ -1,5 +1,192 @@
 import torch
 import torch.nn as nn
+import pywt
+import numpy as np
+from torch.autograd import Function
+
+
+class DWT(nn.Module):
+    def __init__(self):
+        super().__init__()
+        wavelet = pywt.Wavelet("haar")
+        self.band_low = wavelet.rec_lo
+        self.band_high = wavelet.rec_hi
+        self.band_length = len(self.band_low)
+
+    def generate_mat(self, height: int, width: int, dtype):
+        max_side = max(height, width)
+        half_side = max_side // 2
+        mat_height = np.zeros((half_side, max_side + self.band_length - 2))
+        mat_width = np.zeros((max_side - half_side, max_side + self.band_length - 2))
+        end = None if self.band_length // 2 == 1 else -self.band_length // 2 + 1
+
+        idx = 0
+        for i in range(half_side):
+            for j in range(self.band_length):
+                mat_height[i, idx + j] = self.band_low[j]
+            idx += self.band_length
+        mat_height_0 = mat_height[0:height // 2, 0:height + self.band_length - 2]
+        mat_height_1 = mat_height[0:width // 2, 0:width + self.band_length - 2]
+
+        idx = 0
+        for i in range(max_side - half_side):
+            for j in range(self.band_length):
+                mat_width[i, idx + j] = self.band_high[j]
+            idx += self.band_length
+        mat_width_0 = mat_width[0:height // 2, 0:height + self.band_length - 2]
+        mat_width_1 = mat_width[0:width // 2, 0:width + self.band_length - 2]
+
+        mat_height_0 = mat_height_0[:, self.band_length // 2 - 1:end]
+        mat_height_1 = mat_height_1[:, self.band_length // 2 - 1:end]
+        mat_height_1 = np.transpose(mat_height_1)
+
+        mat_width_0 = mat_width_0[:, self.band_length // 2 - 1:end]
+        mat_width_1 = mat_width_1[:, self.band_length // 2 - 1:end]
+        mat_width_1 = np.transpose(mat_width_1)
+
+        self.matrix_low_0 = torch.tensor(mat_height_0, dtype=dtype)
+        self.matrix_low_1 = torch.tensor(mat_height_1, dtype=dtype)
+        self.matrix_high_0 = torch.tensor(mat_width_0, dtype=dtype)
+        self.matrix_high_1 = torch.tensor(mat_width_1, dtype=dtype)
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        device = x.device
+        batch, channels, height, width = x.shape
+        self.generate_mat(height, width, x.dtype)
+        if device != "cpu":
+            self.matrix_low_0.to(device)
+            self.matrix_low_1.to(device)
+            self.matrix_high_0.to(device)
+            self.matrix_high_1.to(device)
+        return DWTFunction.apply(x, self.matrix_low_0, self.matrix_low_1, self.matrix_high_0, self.matrix_high_1)
+
+
+class DWTFunction(Function):
+    @staticmethod
+    def forward(
+        ctx,
+        x: torch.tensor,
+        matrix_low_0: torch.tensor,
+        matrix_low_1: torch.tensor,
+        matrix_high_0: torch.tensor,
+        matrix_high_1: torch.tensor
+    ):
+        """
+        Args: DWT forward function to calculate four frequency-domain components: LL, LH, HL, HH
+            ctx (function):
+            x (torch.tensor): image input with shape [b, c, h, w]
+            matrix_low_0 (torch.tensor): low frequency matrix
+            matrix_low_1 (torch.tensor): low frequency matrix
+            matrix_high_0 (torch.tensor): high frequency matrix
+            matrix_high_1 (torch.tensor): high frequency matrix
+
+        Returns:
+            LL (torch.tensor): low-low frequency-domain components
+            LH (torch.tensor): low-high frequency-domain components
+            HL (torch.tensor): high-low frequency-domain components
+            HH (torch.tensor): high-high frequency-domain components
+        """
+        ctx.save_for_backward(matrix_low_0, matrix_low_1, matrix_high_0, matrix_high_1)
+        L = torch.matmul(matrix_low_0, x)
+        H = torch.matmul(matrix_high_0, x)
+
+        LL = torch.matmul(L, matrix_low_1)
+        LH = torch.matmul(L, matrix_high_1)
+        HL = torch.matmul(H, matrix_low_1)
+        HH = torch.matmul(H, matrix_high_1)
+
+        return LL, LH, HL, HH
+
+    @staticmethod
+    def backward(ctx, grad_LL, grad_LH, grad_HL, grad_HH):
+        matrix_low_0, matrix_low_1, matrix_high_0, matrix_high_1 = ctx.saved_variables
+        grad_L = torch.add(torch.matmul(grad_LL, matrix_low_1.T), torch.matmul(grad_LH, matrix_high_1.T))
+        grad_H = torch.add(torch.matmul(grad_HL, matrix_low_1.T), torch.matmul(grad_HH, matrix_high_1.T))
+        grad_input = torch.add(torch.matmul(matrix_low_0.T, grad_L), torch.matmul(matrix_high_0.T, grad_H))
+        return grad_input, None, None, None, None
+
+
+class IDWTFunction(Function):
+    @staticmethod
+    def forward(
+        ctx,
+        LL: torch.tensor,
+        LH: torch.tensor,
+        HL: torch.tensor,
+        HH: torch.tensor,
+        matrix_low_0: torch.tensor,
+        matrix_low_1: torch.tensor,
+        matrix_high_0: torch.tensor,
+        matrix_high_1: torch.tensor
+    ) -> torch.tensor:
+        ctx.save_for_backward(matrix_low_0, matrix_low_1, matrix_high_0, matrix_high_1)
+        L = torch.add(torch.matmul(LL, matrix_low_1.T), torch.matmul(LH, matrix_high_1.T))
+        H = torch.add(torch.matmul(HL, matrix_low_1.T), torch.matmul(HH, matrix_high_1.T))
+        output = torch.add(torch.matmul(matrix_low_0.T, L), torch.matmul(matrix_high_0.T, H))
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output: torch.tensor) -> torch.tensor:
+        matrix_low_0, matrix_low_1, matrix_high_0, matrix_high_1 = ctx.saved_variables
+        grad_L = torch.matmul(matrix_low_0, grad_output)
+        grad_H = torch.matmul(matrix_high_0, grad_output)
+        grad_LL = torch.matmul(grad_L, matrix_low_0)
+        grad_LH = torch.matmul(grad_L, matrix_high_1)
+        grad_HL = torch.matmul(grad_H, matrix_low_1)
+        grad_HH = torch.matmul(grad_H, matrix_high_1)
+        return grad_LL, grad_LH, grad_HL, grad_HH, None, None, None, None
+
+
+class IDWT(nn.Module):
+    def __init__(self):
+        super().__init__()
+        wavelet = pywt.Wavelet("haar")
+        self.band_low = wavelet.rec_lo[::-1]
+        self.band_high = wavelet.rec_hi[::-1]
+        self.band_length = len(self.band_low)
+
+    def generate_mat(self, height: int, width: int, device: str, dtype):
+        max_side = max(height, width)
+        half_side = max_side // 2
+        mat_height = np.zeros((half_side, max_side + self.band_length - 2))
+        mat_width = np.zeros((max_side - half_side, max_side + self.band_length - 2))
+        end = None if self.band_length // 2 == 1 else -self.band_length // 2 + 1
+
+        idx = 0
+        for i in range(half_side):
+            for j in range(self.band_length):
+                mat_height[i, idx + j] = self.band_low[j]
+            idx += self.band_length
+        mat_height_0 = mat_height[0:height // 2, 0:height + self.band_length - 2]
+        mat_height_1 = mat_height[0:width // 2, 0:width + self.band_length - 2]
+
+        idx = 0
+        for i in range(max_side - half_side):
+            for j in range(self.band_length):
+                mat_width[i, idx + j] = self.band_high[j]
+            idx += self.band_length
+        mat_width_0 = mat_width[0:height // 2, 0:height + self.band_length - 2]
+        mat_width_1 = mat_width[0:width // 2, 0:width + self.band_length - 2]
+
+        mat_height_0 = mat_height_0[:, self.band_length // 2 - 1:end]
+        mat_height_1 = mat_height_1[:, self.band_length // 2 - 1:end]
+        mat_height_1 = np.transpose(mat_height_1)
+
+        mat_width_0 = mat_width_0[:, self.band_length // 2 - 1:end]
+        mat_width_1 = mat_width_1[:, self.band_length // 2 - 1:end]
+        mat_width_1 = np.transpose(mat_width_1)
+
+        self.matrix_low_0 = torch.tensor(mat_height_0, device=device, dtype=dtype)
+        self.matrix_low_1 = torch.tensor(mat_height_1, device=device, dtype=dtype)
+        self.matrix_high_0 = torch.tensor(mat_width_0, device=device, dtype=dtype)
+        self.matrix_high_1 = torch.tensor(mat_width_1, device=device, dtype=dtype)
+
+    def forward(self, LL: torch.tensor, LH: torch.tensor, HL: torch.tensor, HH: torch.tensor) -> torch.tensor:
+        device = LL.device
+        batch, channels, height, width = LL.shape
+        self.generate_mat(height * 2, width * 2, device, LL.dtype)
+        return IDWTFunction.apply(LL, LH, HL, HH, self.matrix_low_0, self.matrix_low_1, self.matrix_high_0,
+                                  self.matrix_high_1)
 
 
 class DWConv(nn.Module):
@@ -113,7 +300,7 @@ class ReverseFIMBlock(nn.Module):
 
 
 class FIM(nn.Module):
-    def __init__(self,):
+    def __init__(self, ):
         super().__init__()
         self.straight = FIMBlock()
         self.reverse = ReverseFIMBlock()
@@ -123,65 +310,16 @@ class FIM(nn.Module):
         return x
 
 
-class MHSA(nn.Module):
-    def __init__(self, embed: int, heads: int = 8, dim_head: int = 64, dropout: float = 0.):
-        super().__init__()
-        self.dim_head = dim_head
-        self.heads = heads
-        self.scale = dim_head ** -0.5
-        self.to_qkv = nn.Linear(embed, 3 * embed, bias=True)
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch, embed, h, w = x.shape
-        x = x.flatten(2).permute(1, 2).reshape(batch, h * w, self.heads, self.dim_head).permute(1, 2)
-        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
-        attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale
-        attn = self.dropout(attn)
-
-        coarse_attn = attn.sum(-2)
-
-        output = torch.matmul(attn, v)
-        return coarse_attn, output
-
-"""
-Test this upsample and downsample compared to papers' state: Conv2d and ConvTranspose2d
 class Downsample(nn.Module):
 
-    def __init__(self, in_channels):
-        super().__init__()
-        self.conv = torch.nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=2, padding=0)
-
-    def forward(self, x):
-        pad = (0, 1, 0, 1)
-        x = torch.nn.functional.pad(x, pad, mode="constant", value=0)
-        x = self.conv(x)
-        return x
-
-
-class Upsample(nn.Module):
-
-    def __init__(self, in_channels):
-        super().__init__()
-        self.conv = nn.Conv2d(in_channels, in_channels, kernel_size=3, stride=1, padding=1)
-
-    def forward(self, x):
-        x = F.interpolate(x, scale_factor=2.0, mode="nearest")
-        x = self.conv(x)
-
-        return x
-"""
-
-class Downsample(nn.Module):
-
-    def __init__(self, in_channels):
+    def __init__(self, in_channels, out_channels: int = None):
         super().__init__()
         self.conv = nn.Conv2d(
             in_channels=in_channels,
-            out_channels=in_channels * 2,
+            out_channels=out_channels if out_channels is not None else in_channels // 2,
             kernel_size=4,
             stride=2,
-            padding=0
+            padding=1
         )
 
     def forward(self, x):
@@ -191,11 +329,11 @@ class Downsample(nn.Module):
 
 class Upsample(nn.Module):
 
-    def __init__(self, in_channels: int):
+    def __init__(self, in_channels: int, out_channels: int = None):
         super().__init__()
         self.conv = nn.ConvTranspose2d(
             in_channels=in_channels,
-            out_channels=in_channels // 2,
+            out_channels=out_channels if out_channels else in_channels // 2,
             kernel_size=4,
             stride=2,
             padding=1
@@ -205,7 +343,6 @@ class Upsample(nn.Module):
         x = self.conv(x)
 
         return x
-
 
 
 class RegionSelfAttention(nn.Module):
@@ -229,15 +366,32 @@ class RegionSelfAttention(nn.Module):
 
 
 
+class Embedding(nn.Module):
+    def __init__(self, in_channels: int, out_channels: int, patch_size: int = 14):
+        super().__init__()
+        self.patch_size = patch_size
+        self.embd = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=patch_size,
+            stride=patch_size,
+            padding=0
+        )
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        x = self.embd(x)
+        return x
+
+
 class CoarseSelfAttention(nn.Module):
-    def __init__(self, dim: int, head_dim: int = 4):
+    def __init__(self, dim: int, head_dim: int = 64):
         super().__init__()
         self.dim = dim
         self.head_dim = head_dim
-        
+
         self.upsample = Upsample(dim, dim)
         self.downsample = Downsample(dim, dim)
-        
+
         self.to_qkv = nn.Linear(head_dim, head_dim * 3)
         self.softmax = nn.Softmax(dim=-1)
 
@@ -246,10 +400,11 @@ class CoarseSelfAttention(nn.Module):
         x = self.downsample(x)
 
         batch, channels, h, w = x.shape
+
         x = x.view(batch, channels // self.head_dim, self.head_dim, h * w).transpose(-2, -1)
-        
+
         q, k, v = self.to_qkv(x).chunk(3, dim=-1)
-        
+
         # batch, num_heads, patch, head_embed
         attn = torch.matmul(k, q.transpose(-2, -1))
         # batch, num_heads, patch, patch
@@ -272,42 +427,77 @@ class CoarseSelfAttention(nn.Module):
         return top_k, output
 
 
-
-
 class RegionSelectionAttention(nn.Module):
-    def __init__(self):
-        self.course_attn = CoarseSelfAttention()
-        self.topk_attn = TopkSelfAttention()
-        self.dwconv = DWConv()
+    def __init__(self, dim: int, head_dim: int = 64):
+        super().__init__()
+        self.dim = dim
+        self.head_dim = head_dim
+
+        self.course_attn = CoarseSelfAttention(dim, head_dim)
+        self.topk_attn = TopkSelfAttention(head_dim)
+        self.dwconv = DWConv(dim, dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         top_k, coarse_output = self.course_attn(x)
-        region_output = self.rsa(coarse_output, top_k)
+        region_output = self.topk_attn(coarse_output, top_k)
+        print(coarse_output.shape, region_output.shape)
         x = coarse_output + region_output
         x = self.dwconv(x)
         return x
 
 
-class RSABlock(nn.Module):
-    def __init__(self, in_channels):
+class MLP(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int = None, dropout=0.):
         super().__init__()
-        self.norm1 = nn.LayerNorm()
-        self.rsa = RegionSelectionAttention()
-        self.norm2 = nn.LayerNorm()
-        self.mlp = nn.MLP()
+        hidden_dim = hidden_dim if hidden_dim else 4 * dim
+        self.net = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+class RSABlock(nn.Module):
+    def __init__(self, in_channels: int):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(in_channels)
+        self.rsa = RegionSelectionAttention(in_channels)
+        self.norm2 = nn.LayerNorm(in_channels)
+        self.mlp = MLP(in_channels)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.rsa(self.norm1(x))
-        x = x + self.mlp(self.norm2(x))
+        print("RSABlock", x.shape)
+        batch, dim, h, w = x.shape
+
+        norm_x = x.flatten(2).permute(0, 2, 1)
+        norm_x = self.norm1(norm_x)
+        norm_x = norm_x.view(batch, dim, h, w)
+        x = x + self.rsa(norm_x)
+
+        norm_x = x.flatten(2).permute(0, 2, 1)
+        norm_x = self.norm2(norm_x)
+        norm_x = self.mlp(norm_x)
+        norm_x = norm_x.view(batch, dim, h, w)
+
+        x = x + norm_x
+        print("RSABlock_", x.shape)
         return x
 
 
 class TopkSelfAttention(nn.Module):
-    def __init__(self, head_dim: int = 4):
+    def __init__(self, head_dim: int = 64):
         super().__init__()
         self.stride = 2
         self.kernel_size = 2
         self.head_dim = head_dim
+
+        # self.embed = Embedding(dim, dim)
 
         self.to_qkv = nn.Linear(head_dim, head_dim * 3)
         self.softmax = nn.Softmax(dim=-1)
@@ -319,7 +509,7 @@ class TopkSelfAttention(nn.Module):
         batch, embed, h, w = x.shape
         # [batch, num_heads, embeddings, height, width]
         residual = residual.view(batch, embed // self.head_dim, self.head_dim, h, w)
-        print(residual.shape)
+
         x = x.view(batch, embed // self.head_dim, self.head_dim, h, w)
         # [batch, num_heads, embeddings, height // 2, width // 2, 2, 2]
         patches = x.unfold(3, self.kernel_size, self.stride).unfold(4, self.kernel_size, self.stride)
@@ -329,7 +519,7 @@ class TopkSelfAttention(nn.Module):
         batches = []
         for bat in range(batch):
             slices = []
-            for i, inds in enumerate(top_k):
+            for i, inds in enumerate(top_k[bat]):
                 patchify = []
                 for idx in inds:
                     patchify.append(patches[bat, i, :, idx, :, :].unsqueeze(0).unsqueeze(1).unsqueeze(3))
@@ -356,24 +546,36 @@ class TopkSelfAttention(nn.Module):
         output = output.transpose(-2, -1)
 
         residual_patches = residual.unfold(3, self.kernel_size, self.stride).unfold(4, self.kernel_size, self.stride)
+        _, num_heads, head_dim, patch, _, _, _ = residual_patches.shape
         residual_patches = residual_patches.reshape(batch, embed // self.head_dim, self.head_dim, -1, 2, 2)
 
         output = output.view(batch, embed // self.head_dim, self.head_dim, -1, 2, 2)
 
+        # torch.Size([1, 1, 64, 12321, 2, 2]) torch.Size([1, 1, 64, 3080, 2, 2])
+        # The size of tensor a (3080) must match the size of tensor b (64) at non-singleton dimension 1
+        # torch.Size([64, 3080, 2, 2]) torch.Size([64, 2, 2])
         for bat in range(batch):
-            for i, inds in enumerate(top_k):
+            for i, inds in enumerate(top_k[bat]):
                 for j, idx in enumerate(inds):
                     residual_patches[bat, i, :, idx, :, :] += output[bat, i, :, j, :, :]
 
+        residual_patches = residual_patches.reshape(
+            batch,
+            -1,
+            patch * 2,
+            patch * 2
+        )
+        # residual_patches = residual_patches.view(batch, embed, h, w)
         return residual_patches
-    
+
+
 class DWTResidual(nn.Module):
-    def __init__(self, in_channels: int, out_channels):
+    def __init__(self, in_channels: int):
         super().__init__()
         self.dwt = DWT()
         self.conv = nn.Conv2d(
             in_channels=in_channels,
-            out_channels=out_channels,
+            out_channels=in_channels,
             kernel_size=3,
             stride=1,
             padding=1
@@ -413,4 +615,87 @@ class WFM(nn.Module):
         x = torch.cat([inverse, x])
         x = self.conv(x)
         return x
-    
+
+
+class LAAModel(nn.Module):
+    def __init__(self, in_channels=3, depths=[64, 128, 256, 512]):
+        super().__init__()
+        self.in_channels = in_channels
+        self.conv1 = nn.Conv2d(
+            in_channels=in_channels,
+            out_channels=depths[0],
+            kernel_size=3,
+            stride=1,
+            padding=1
+        )
+
+        self.embed = Embedding(64, 64, 2)
+
+        self.act1 = nn.LeakyReLU(inplace=True)
+        self.down_rsa_blocks = []
+        self.downsample = []
+        self.dwt = []
+        for i, depth in enumerate(depths):
+            self.down_rsa_blocks.append(
+                RSABlock(depth)
+            )
+            self.dwt.append(
+                DWTResidual(depth)
+            )
+            self.downsample.append(
+                Downsample(depth)
+            )
+
+        # self.down_rsa_blocks = nn.ModuleList(self.down_rsa_blocks)
+        # self.downsample = nn.ModuleList(self.downsample)
+        # self.dwt = nn.ModuleList(self.dwt)
+
+        self.feature_transformation = RSABlock(depths[-1])
+
+        self.up_rsa_blocks = []
+        self.wfm = [None]
+        for i, depth in enumerate(depths[::-1]):
+            self.up_rsa_blocks.append(
+                RSABlock(depth)
+            )
+            self.wfm.append(
+                WFM(depth)
+            )
+        self.up_rsa_blocks = nn.ModuleList(self.up_rsa_blocks)
+        self.wfm = nn.ModuleList(self.wfm)
+
+        self.conv2 = nn.Conv2d(
+            in_channels=depths[0],
+            out_channels=in_channels,
+            kernel_size=3,
+            stride=1,
+            padding=1
+        )
+        self.act2 = nn.LeakyReLU(inplace=True)
+
+    def forward(self, x: torch.tensor) -> torch.tensor:
+        residual = x.clone()
+        x = self.conv1(x)
+        x = self.act1(x)
+
+        x = self.embed(x)
+        rsa_residual = []
+        for rsa, downsample, dwt in zip(self.down_rsa_blocks, self.downsample, self.dwt):
+            print(len(x))
+            x = rsa(x)
+            rsa_residual.append(dwt(x))
+            x = downsample(x)
+
+        rsa_residual.reverse()
+        rsa_residual = [None] + rsa_residual
+
+        x = torch.cat([self.feature_transformation(x), x], dim=-1)
+
+        for i, (rsa, wfm, wfm_features) in enumerate(zip(self.up_rsa_blocks, self.wfm, rsa_residual)):
+            x = rsa(x)
+            if wfm is not None:
+                x = wfm(*wfm_features, x)
+
+        x = self.conv2(x)
+        x = self.act2(x)
+        return residual + x
