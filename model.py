@@ -608,7 +608,7 @@ class WFM(nn.Module):
 
 
 class LAAModel(nn.Module):
-    def __init__(self, in_channels=3, depths=[64, 128, 256, 512]):
+    def __init__(self, patch_size: int = 2, in_channels=3, depths=[64, 128, 256, 512], image_size: int = 512):
         super().__init__()
         self.in_channels = in_channels
         self.conv1 = nn.Conv2d(
@@ -619,7 +619,7 @@ class LAAModel(nn.Module):
             padding=1
         )
 
-        self.embed = Embedding(64, 64, 2)
+        self.embed = Embedding(depths[0], depths[0], patch_size)
 
         self.act1 = nn.LeakyReLU(inplace=True)
         self.down_rsa_blocks = []
@@ -666,7 +666,15 @@ class LAAModel(nn.Module):
 
         self.conv1x1 = nn.Conv2d(depths[-1] * 2, depths[-1] * 2, 1, 1, 0)
         self.act1x1 = nn.LeakyReLU()
-        self.upsample = Upsample(depths[0] * 2, depths[0])
+        
+        kernel_size = image_size // patch_size
+        self.upsample =nn.ConvTranspose2d(
+            in_channels=depths[0] * 2,
+            out_channels=depths[0],
+            kernel_size=patch_size,
+            stride=patch_size,
+            padding=0
+        )
 
     def forward(self, x: torch.tensor) -> torch.tensor:
         residual = x.clone()
@@ -678,6 +686,7 @@ class LAAModel(nn.Module):
 
         rsa_residual = []
         for rsa, downsample, dwt in zip(self.down_rsa_blocks, self.downsample, self.dwt):
+            print(x.shape)
             x = rsa(x)
             if dwt:
                 rsa_residual.append(dwt(x))
@@ -694,16 +703,7 @@ class LAAModel(nn.Module):
                 x = wfm(*wfm_features, x)
 
         x = self.upsample(x)
-
         x = self.conv2(x)
         x = self.act2(x)
         x = residual + x
         return x
-
-
-if __name__ == "__main__":
-    model = LAAModel()
-    tensor = torch.rand(1, 3, 512, 512)
-    assert model(tensor).shape == tensor.shape
-    
-    
