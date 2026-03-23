@@ -9,6 +9,7 @@ Learning Attention from Attention: Efficient Self-Refinement Transformer for Fac
 - [x] Build the model (the forward pass works, but still not sure that the implentation is exact due to out of memory with image size 512x512
   - Haar based model
   - Conv haar based model (tried to fix out of memory issue)
+  - **Notes**: dwt.py, idwt.py, model.py have some issues in the implementation but I will leave it as it is. 
 - [ ] Training Pipeline
 - [ ] Train & test model
 
