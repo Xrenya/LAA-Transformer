@@ -6,8 +6,9 @@ Learning Attention from Attention: Efficient Self-Refinement Transformer for Fac
 [<img src="https://github.com/Guanxin-Li/LAA-Transformer/blob/main/architecture.png">](arch)
 
 **TODO**:
-- [ ] Build the model
-  - Test replacing `DWT` layer with `F.conv2d(in_channels=in_channels, groups=in_channels)`
+- [x] Build the model (the forward pass works, but still not sure that the implentation is exact due to out of memory with image size 512x512
+  - Haar based model
+  - Conv haar based model (tried to fix out of memory issue)
 - [ ] Training Pipeline
 - [ ] Train & test model
 
